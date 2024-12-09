@@ -105,6 +105,19 @@ class SolarManagerApi: RestClient {
         return response
     }
     
+    func getV1Statistics(solarManagerId smId: String, from: Date, to: Date, accuracy: Accuracy) async throws -> StatisticsV1Response? {
+        let dateFormatter = DateFormatter()
+        dateFormatter.timeZone = TimeZone.current
+        dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS"
+        let fromIso = dateFormatter.string(from: from)
+        let toIso = dateFormatter.string(from: to)
+        
+        let response: StatisticsV1Response? = try await get(
+            serviceUrl: "/v1/statistics/gateways/\(smId)?from=\(fromIso)&to=\(toIso)&accuracy=\(accuracy)")
+        
+        return response
+    }
+    
     func putControlCarCharger(sensorId: String, control: ControlCarChargingRequest) async throws -> Void {
         var _: NoContentResponse? = try await put(
             serviceUrl: "/v1/control/car-charger/\(sensorId)",

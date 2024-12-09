@@ -16,6 +16,8 @@ actor SolarManager: EnergyManager {
     private var systemInformation: V1User?
     private var sensorInfos: [SensorInfosV1Response]?
     private var sensorInfosUpdatedAt: Date?
+    
+    public static let instance = SolarManager()
 
     func login(username: String, password: String) async -> Bool {
         return await doLogin(email: username, password: password)
@@ -150,6 +152,26 @@ actor SolarManager: EnergyManager {
         
         return .init(totalCharedToday: total, currentCharging: current)
     }
+    
+    func fetchSolarDetails() async throws -> SolarDetailsData {
+        try await ensureLoggedIn()
+        try await ensureSmId()
+        
+        let now = Date()
+        let calendar = Calendar.current
+        let startOfDay: Date = calendar.date(bySettingHour: 0, minute: 0, second: 0, of: now)!
+        let endOfDay: Date = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: now)!
+        
+        let todayStatistics = try? await solarManagerApi.getV1Statistics(
+            solarManagerId: systemInformation!.sm_id,
+            from: startOfDay,
+            to: endOfDay,
+            accuracy: .high)
+        
+        return SolarDetailsData(todaySolarProduction: todayStatistics?.production)
+        
+    }
+
 
     func setCarChargingMode(
         sensorId: String,

@@ -15,6 +15,8 @@ protocol EnergyManager {
         -> OverviewData
     
     func fetchChargingData() async throws -> CharingInfoData
+    
+    func fetchSolarDetails() async throws -> SolarDetailsData
 
     func setCarChargingMode(
         sensorId: String, carCharging: ControlCarChargingRequest
