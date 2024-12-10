@@ -16,7 +16,7 @@ actor SolarManager: EnergyManager {
     private var systemInformation: V1User?
     private var sensorInfos: [SensorInfosV1Response]?
     private var sensorInfosUpdatedAt: Date?
-    
+
     public static let instance = SolarManager()
 
     func login(username: String, password: String) async -> Bool {
@@ -30,7 +30,10 @@ actor SolarManager: EnergyManager {
         try await ensureSmId()
         try await ensureSensorInfosAreCurrent()
 
-        // GET chart:SSID
+        async let streamSensorInfosResult =
+            try await solarManagerApi.getV1StreamGateway(
+                solarManagerId: systemInformation!.sm_id)
+
         if let chart = try await solarManagerApi.getV1Chart(
             solarManagerId: systemInformation!.sm_id)
         {
@@ -40,14 +43,6 @@ actor SolarManager: EnergyManager {
                     - chart.battery!.batteryDischarging
                 : nil
 
-            // GET stream/gateway/:SSID
-            let streamSensorInfos =
-                try await solarManagerApi.getV1StreamGateway(
-                    solarManagerId: systemInformation!.sm_id)
-
-            let isAnyCarCharing = getIsAnyCarCharing(
-                streamSensors: streamSensorInfos)
-
             let dateFormatter = DateFormatter()
             dateFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"
             dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)  // Set timezone to UTC
@@ -55,6 +50,10 @@ actor SolarManager: EnergyManager {
             let lastUpdated = dateFormatter.date(from: chart.lastUpdate)
             debugPrint(chart.lastUpdate)
             debugPrint(lastUpdated ?? "nil")
+
+            let streamSensorInfos = try await streamSensorInfosResult
+            let isAnyCarCharing = getIsAnyCarCharing(
+                streamSensors: streamSensorInfos)
 
             return OverviewData(
                 currentSolarProduction: chart.production,
@@ -128,50 +127,82 @@ actor SolarManager: EnergyManager {
 
         let chargingStationSensorIds = getCharingStationSensorIds()
         var total: Double? = nil
-        
+
         // Get todays charing amount from all charging stations
         for chargingStationSensorId in chargingStationSensorIds {
-            let chargingStationSensorData = try? await solarManagerApi.getV1ConsumptionSensor(sensorId: chargingStationSensorId)
-            
-            if (chargingStationSensorData != nil) {
-                total = (total ?? 0) + chargingStationSensorData!.totalConsumption
+            let chargingStationSensorData =
+                try? await solarManagerApi.getV1ConsumptionSensor(
+                    sensorId: chargingStationSensorId)
+
+            if chargingStationSensorData != nil {
+                total =
+                    (total ?? 0) + chargingStationSensorData!.totalConsumption
             }
         }
 
         // Get current charging power
         let overviewData = try? await fetchOverviewData(lastOverviewData: nil)
-        
+
         var current: Int? = nil
         if overviewData != nil {
             current = overviewData!.chargingStations
                 .map { station in station.currentPower }
                 .reduce(0, +)
         }
-        
-        print("Got charging data: 24h: \(String(describing: total)), current: \(String(describing: current))")
-        
+
+        print(
+            "Got charging data: 24h: \(String(describing: total)), current: \(String(describing: current))"
+        )
+
         return .init(totalCharedToday: total, currentCharging: current)
     }
-    
+
     func fetchSolarDetails() async throws -> SolarDetailsData {
         try await ensureLoggedIn()
         try await ensureSmId()
-        
+
         let now = Date()
         let calendar = Calendar.current
-        let startOfDay: Date = calendar.date(bySettingHour: 0, minute: 0, second: 0, of: now)!
-        let endOfDay: Date = calendar.date(bySettingHour: 23, minute: 59, second: 59, of: now)!
-        
-        let todayStatistics = try? await solarManagerApi.getV1Statistics(
+        let startOfDay: Date = calendar.date(
+            bySettingHour: 0, minute: 0, second: 0, of: now)!
+        let endOfDay: Date = calendar.date(
+            bySettingHour: 23, minute: 59, second: 59, of: now)!
+
+        async let todayStatisticsResult = solarManagerApi.getV1Statistics(
             solarManagerId: systemInformation!.sm_id,
             from: startOfDay,
             to: endOfDay,
             accuracy: .high)
-        
-        return SolarDetailsData(todaySolarProduction: todayStatistics?.production)
-        
-    }
 
+        async let forecastResult = solarManagerApi.getV1ForecastGateway(
+            solarManagerId: systemInformation!.sm_id)
+
+        let todayStatistics = try? await todayStatisticsResult
+        let forecast = (try? await forecastResult) ?? []
+        
+        let dailyForecast = calculateKWhPerDay(data: forecast)
+        let nowLocal = Date().convertFromUTCToLocalTime()
+        let today = Calendar.current.startOfDay(for: nowLocal)
+            .convertFromUTCToLocalTime()
+        let tomorrow = Calendar.current.startOfDay(
+            for: Calendar.current.date(byAdding: .day, value: 1, to: Date())!
+        ).convertFromUTCToLocalTime()
+        let afterTomorrow = Calendar.current.startOfDay(
+            for: Calendar.current.date(byAdding: .day, value: 2, to: Date())!
+        ).convertFromUTCToLocalTime()
+        
+        let todaysData = dailyForecast[today] ?? 0
+        let tomorrowData = dailyForecast[tomorrow] ?? 0
+        let afterTomorrowData = dailyForecast[afterTomorrow] ?? 0
+
+        return SolarDetailsData(
+            todaySolarProduction: todayStatistics?.production,
+            forecastToday: todaysData,
+            forecastTomorrow: tomorrowData,
+            forecastDayAfterTomorrow: afterTomorrowData
+        )
+
+    }
 
     func setCarChargingMode(
         sensorId: String,
@@ -332,4 +363,36 @@ actor SolarManager: EnergyManager {
         }
     }
 
+    private func calculateKWhPerDay(data: [ForecastItemV1Response]) -> [Date:
+        Double]
+    {
+        var dailyKWh: [Date: Double] = [:]
+        let calendar = Calendar.current
+
+        for solarData in data {
+            let date = Date(timeIntervalSince1970: solarData.timestamp / 1000)
+                .convertFromUTCToLocalTime()
+            let day = calendar.startOfDay(for: date).convertFromUTCToLocalTime()
+
+            // Accumulate energy consumption for the day
+            dailyKWh[day] = (dailyKWh[day] ?? 0) + solarData.expected / 1000
+        }
+
+        return dailyKWh
+    }
+
+}
+
+extension Date {
+    func convertFromUTCToLocalTime() -> Date {
+        let localTimeZone = TimeZone.current
+        let sourceTimeZone = TimeZone(abbreviation: "UTC")!
+
+        let localOffset = localTimeZone.secondsFromGMT(for: self)
+        let utcOffset = sourceTimeZone.secondsFromGMT(for: self)
+
+        let intervalDifference = localOffset - utcOffset
+
+        return Date(timeInterval: TimeInterval(intervalDifference), since: self)
+    }
 }

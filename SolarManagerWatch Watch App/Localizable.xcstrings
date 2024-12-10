@@ -367,6 +367,9 @@
         }
       }
     },
+    "Forecast" : {
+
+    },
     "Invalid Email" : {
       "localizations" : {
         "de" : {
@@ -1075,6 +1078,9 @@
       }
     },
     "Today" : {
+
+    },
+    "Tomorrow" : {
 
     },
     "Try again" : {

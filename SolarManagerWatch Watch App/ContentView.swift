@@ -1,10 +1,3 @@
-//
-//  ContentView.swift
-//  SolarManagerWatch Watch App
-//
-//  Created by Marc Dürst on 28.09.2024.
-//
-
 import SwiftUI
 
 enum Tab {
